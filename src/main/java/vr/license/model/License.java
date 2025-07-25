@@ -1,14 +1,20 @@
 package vr.license.model;
 
-import java.time.LocalDate;
+import jakarta.persistence.*;
 import java.time.LocalDateTime;
 
+@Entity
 public class License {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
+
+    @Column(unique = true, nullable = false)
     private String licenseKey;
+
     private String type;
-    private LocalDate startDate;
-    private LocalDate endDate;
+    private LocalDateTime startDate;
+    private LocalDateTime endDate;
     private String status;
     private Integer maxDevices;
     private Integer maxActivations;
@@ -44,19 +50,19 @@ public class License {
         this.type = type;
     }
 
-    public LocalDate getStartDate() {
+    public LocalDateTime getStartDate() {
         return startDate;
     }
 
-    public void setStartDate(LocalDate startDate) {
+    public void setStartDate(LocalDateTime startDate) {
         this.startDate = startDate;
     }
 
-    public LocalDate getEndDate() {
+    public LocalDateTime getEndDate() {
         return endDate;
     }
 
-    public void setEndDate(LocalDate endDate) {
+    public void setEndDate(LocalDateTime endDate) {
         this.endDate = endDate;
     }
 

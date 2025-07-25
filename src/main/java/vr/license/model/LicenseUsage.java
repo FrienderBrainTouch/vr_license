@@ -1,9 +1,14 @@
 package vr.license.model;
 
+import jakarta.persistence.*;
 import java.time.LocalDateTime;
 
+@Entity
 public class LicenseUsage {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
+
     private String licenseKey;
     private String deviceId;
     private String appVersion;
@@ -11,7 +16,6 @@ public class LicenseUsage {
     private LocalDateTime activatedAt;
     private LocalDateTime lastUsedAt;
     private String status;
-    private String token;
 
     // 기본 생성자
     public LicenseUsage() {}
@@ -81,14 +85,6 @@ public class LicenseUsage {
         this.status = status;
     }
 
-    public String getToken() {
-        return token;
-    }
-
-    public void setToken(String token) {
-        this.token = token;
-    }
-
     @Override
     public String toString() {
         return "LicenseUsage{" +
@@ -98,9 +94,7 @@ public class LicenseUsage {
                 ", appVersion='" + appVersion + '\'' +
                 ", platform='" + platform + '\'' +
                 ", activatedAt=" + activatedAt +
-                ", lastUsedAt=" + lastUsedAt +
                 ", status='" + status + '\'' +
-                ", token='" + token + '\'' +
                 '}';
     }
 }

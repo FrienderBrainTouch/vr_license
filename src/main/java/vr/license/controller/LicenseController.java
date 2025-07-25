@@ -14,56 +14,22 @@ import jakarta.servlet.http.HttpSession;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.*;
+import org.springframework.beans.factory.annotation.Autowired;
+import vr.license.repository.LicenseRepository;
+import vr.license.repository.LicenseUsageRepository;
+import org.springframework.web.servlet.mvc.support.RedirectAttributes;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.scheduling.annotation.Scheduled;
+import jakarta.annotation.PostConstruct;
 
 @Controller
 @RequestMapping("/license")
 public class LicenseController {
 
-    // Dummy data storage
-    private static final Map<String, License> licenses = new HashMap<>();
-    private static final Map<String, LicenseUsage> usageRecords = new HashMap<>();
-
-    static {
-        // Initial dummy data with 25A1234-5678 format
-        License license1 = new License();
-        license1.setId(1L);
-        license1.setLicenseKey("25A1234-5678");
-        license1.setType("BASIC");
-        license1.setStartDate(LocalDate.of(2024, 1, 15));
-        license1.setEndDate(LocalDate.of(2024, 2, 14));
-        license1.setStatus("ACTIVE");
-        license1.setMaxDevices(1);
-        license1.setMaxActivations(1);
-        license1.setDescription("Basic License - 30 days");
-        license1.setCreatedAt(LocalDateTime.now());
-        licenses.put(license1.getLicenseKey(), license1);
-
-        License license2 = new License();
-        license2.setId(2L);
-        license2.setLicenseKey("25B9876-5432");
-        license2.setType("PREMIUM");
-        license2.setStartDate(LocalDate.of(2024, 1, 10));
-        license2.setEndDate(LocalDate.of(2024, 4, 10));
-        license2.setStatus("USED");
-        license2.setMaxDevices(1);
-        license2.setMaxActivations(1);
-        license2.setDescription("Premium License - 90 days");
-        license2.setCreatedAt(LocalDateTime.now());
-        licenses.put(license2.getLicenseKey(), license2);
-
-        License license3 = new License();
-        license3.setId(3L);
-        license3.setLicenseKey("25C5555-9999");
-        license3.setType("BASIC");
-        license3.setStartDate(LocalDate.of(2024, 1, 1));
-        license3.setEndDate(LocalDate.of(2024, 12, 31));
-        license3.setStatus("ACTIVE");
-        license3.setMaxDevices(1);
-        license3.setMaxActivations(1);
-        license3.setDescription("Offline Test License");
-        license3.setCreatedAt(LocalDateTime.now());
-        licenses.put(license3.getLicenseKey(), license3);
-    }
+    @Autowired
+    private LicenseRepository licenseRepository;
+    @Autowired
+    private LicenseUsageRepository licenseUsageRepository;
 
     // License creation page (requires login)
     @GetMapping("/create")
@@ -79,11 +45,53 @@ public class LicenseController {
     @GetMapping("/manage")
     public String manageLicensePage(Model model, HttpSession session) {
         // Login check
-        if (session.getAttribute("isLoggedIn") == null || !(Boolean) session.getAttribute("isLoggedIn")) {
-            return "redirect:/login";
+        // if (session.getAttribute("isLoggedIn") == null || !(Boolean) session.getAttribute("isLoggedIn")) {
+        //     return "redirect:/login";
+        // }
+        // 만료일이 지난 라이선스 자동 만료 처리
+        List<License> licenses = licenseRepository.findAll();
+        System.out.println("[만료체크] 전체 라이선스 개수: " + licenses.size());
+        boolean updated = false;
+        int checked = 0;
+        for (License license : licenses) {
+            checked++;
+            System.out.println("[만료체크] #" + checked + " | key: " + license.getLicenseKey() + ", type: " + license.getType() + ", endDate: " + license.getEndDate() + ", status: " + license.getStatus());
+            if (license.getEndDate() != null && java.time.LocalDateTime.now().isAfter(license.getEndDate()) && !"EXPIRED".equals(license.getStatus())) {
+                System.out.println("[만료체크] → 만료 처리 대상! key: " + license.getLicenseKey());
+                license.setStatus("EXPIRED");
+                licenseRepository.save(license);
+                updated = true;
+            }
+        }
+        if (checked == 0) {
+            System.out.println("[만료체크] for문에 진입했으나 라이선스가 없습니다.");
+        }
+        if (updated) {
+            System.out.println("[만료체크] 만료 처리 후 라이선스 목록 재조회");
+            licenses = licenseRepository.findAll(); // 갱신 후 재조회
+        }
+        // 정렬: 사용중 > 활성 > 만료 > 기타, 각 그룹 내 최신 생성일 내림차순
+        System.out.println("[정렬전] 라이선스 목록:");
+        for (License l : licenses) {
+            System.out.println("  - " + l.getLicenseKey() + " | status: " + l.getStatus() + " | createdAt: " + l.getCreatedAt());
         }
         
-        model.addAttribute("licenses", licenses.values());
+        licenses.sort(Comparator
+            .comparing((License l) -> {
+                String status = l.getStatus();
+                if ("IN_USE".equalsIgnoreCase(status) || "사용중".equals(status)) return 0;
+                if ("ACTIVE".equalsIgnoreCase(status) || "활성".equals(status)) return 1;
+                if ("EXPIRED".equalsIgnoreCase(status) || "만료".equals(status)) return 2;
+                return 3; // 기타 상태
+            })
+            .thenComparing(License::getCreatedAt, Comparator.reverseOrder())
+        );
+        
+        System.out.println("[정렬후] 라이선스 목록:");
+        for (License l : licenses) {
+            System.out.println("  - " + l.getLicenseKey() + " | status: " + l.getStatus() + " | createdAt: " + l.getCreatedAt());
+        }
+        model.addAttribute("licenses", licenses);
         return "license/manage";
     }
 
@@ -97,137 +105,130 @@ public class LicenseController {
         return "license/simulator";
     }
 
-    // License creation API (requires login)
+    // 라이선스 생성 API (requires login)
     @PostMapping("/create")
-    @ResponseBody
-    public ResponseEntity<Map<String, Object>> createLicense(@RequestBody LicenseRequest request, HttpSession session) {
-        // Login check for API
+    public String createLicense(@ModelAttribute LicenseRequest request, HttpSession session, RedirectAttributes redirectAttributes) {
         if (session.getAttribute("isLoggedIn") == null || !(Boolean) session.getAttribute("isLoggedIn")) {
-            Map<String, Object> response = new HashMap<>();
-            response.put("success", false);
-            response.put("message", "Authentication required.");
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(response);
+            redirectAttributes.addFlashAttribute("error", "Authentication required.");
+            return "redirect:/login";
         }
-        
-        Map<String, Object> response = new HashMap<>();
-        
         try {
-            // Auto-generate license key if not provided in request
             String licenseKey = request.getLicenseKey();
             if (licenseKey == null || licenseKey.trim().isEmpty()) {
                 licenseKey = generateLicenseKey();
             }
-
-            // Check for duplicates
-            if (licenses.containsKey(licenseKey)) {
-                response.put("success", false);
-                response.put("message", "License key already exists.");
-                return ResponseEntity.badRequest().body(response);
+            if (licenseRepository.findByLicenseKey(licenseKey) != null) {
+                redirectAttributes.addFlashAttribute("error", "라이센스 키가 이미 존재합니다.");
+                return "redirect:/";
             }
-
-            // Create new license
             License license = new License();
-            license.setId((long) (licenses.size() + 1));
             license.setLicenseKey(licenseKey);
             license.setType(request.getLicenseType());
-            license.setStartDate(LocalDate.parse(request.getStartDate()));
-            license.setEndDate(LocalDate.parse(request.getEndDate()));
+            license.setStartDate(java.time.LocalDateTime.parse(request.getStartDate()));
+            if ("CUSTOM".equals(request.getLicenseType())) {
+                license.setEndDate(java.time.LocalDateTime.parse(request.getEndDate()));
+            } else {
+                license.setEndDate(null); // 최초 인증 시점에 부여
+            }
             license.setStatus("ACTIVE");
             license.setMaxDevices(request.getMaxDevices());
             license.setMaxActivations(request.getMaxActivations());
             license.setDescription(request.getDescription());
-            license.setCreatedAt(LocalDateTime.now());
-
-            licenses.put(licenseKey, license);
-
-            response.put("success", true);
-            response.put("message", "License created successfully.");
-            response.put("license", license);
-
-            return ResponseEntity.ok(response);
+            license.setCreatedAt(java.time.LocalDateTime.now());
+            licenseRepository.save(license);
+            redirectAttributes.addFlashAttribute("success", "라이센스가 성공적으로 생성되었습니다.");
+            return "redirect:/";
         } catch (Exception e) {
-            response.put("success", false);
-            response.put("message", "Error occurred while creating license: " + e.getMessage());
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response);
+            redirectAttributes.addFlashAttribute("error", "생성 중 오류 발생: " + e.getMessage());
+            return "redirect:/";
         }
     }
 
-    // VR App License Verification API (NO LOGIN REQUIRED - for VR apps)
+    // 라이센스 인증 API (NO LOGIN REQUIRED - for VR apps)
     @PostMapping("/verify")
     @ResponseBody
-    public ResponseEntity<Map<String, Object>> verifyLicense(@RequestBody VerifyRequest request) {
+    public ResponseEntity<Map<String, Object>> verifyLicense(@RequestBody String rawJson) {
         Map<String, Object> response = new HashMap<>();
-        
         try {
-            String licenseKey = request.getLicenseKey();
-            String deviceId = request.getDeviceId();
-
-            // Check if license exists
-            License license = licenses.get(licenseKey);
+            System.out.println("Received raw JSON: " + rawJson);
+            
+            // Jackson ObjectMapper를 사용하여 JSON 파싱
+            ObjectMapper mapper = new ObjectMapper();
+            Map<String, Object> jsonMap = mapper.readValue(rawJson, Map.class);
+            String licenseKey = (String) jsonMap.get("key");
+            
+            System.out.println("Extracted license key: " + licenseKey);
+            
+            License license = licenseRepository.findByLicenseKey(licenseKey);
+            System.out.println("Found license: " + (license != null ? license.toString() : "null"));
+            
             if (license == null) {
-                response.put("success", false);
-                response.put("message", "유효하지 않은 라이센스 키입니다.");
-                response.put("code", "INVALID_LICENSE");
-                return ResponseEntity.badRequest().body(response);
+                System.out.println("License not found in database");
+                response.put("status", "NOT_FOUND");
+                response.put("expiry", "");
+                return ResponseEntity.ok(response);
             }
-
-            // Check license status
-            if ("EXPIRED".equals(license.getStatus())) {
-                response.put("success", false);
-                response.put("message", "라이센스가 만료되었습니다.");
-                response.put("code", "EXPIRED_LICENSE");
-                return ResponseEntity.badRequest().body(response);
-            }
-
-            if ("USED".equals(license.getStatus())) {
-                response.put("success", false);
-                response.put("message", "라이센스가 이미 사용되었습니다.");
-                response.put("code", "USED_LICENSE");
-                return ResponseEntity.badRequest().body(response);
-            }
-
-            // Check expiration date
-            if (LocalDate.now().isAfter(license.getEndDate())) {
+            
+            System.out.println("License found: " + license.toString());
+            System.out.println("Current time: " + java.time.LocalDateTime.now());
+            System.out.println("License end date: " + license.getEndDate());
+            
+            // 만료일 체크
+            if (license.getEndDate() != null && java.time.LocalDateTime.now().isAfter(license.getEndDate())) {
+                System.out.println("License is expired, updating status to EXPIRED");
                 license.setStatus("EXPIRED");
-                response.put("success", false);
-                response.put("message", "라이센스가 만료되었습니다.");
-                response.put("code", "EXPIRED_LICENSE");
-                return ResponseEntity.badRequest().body(response);
+                licenseRepository.save(license);
+                response.put("status", "EXPIRED");
+                response.put("expiry", license.getEndDate().toString());
+                return ResponseEntity.ok(response);
             }
-
-            // Create usage record
-            LicenseUsage usage = new LicenseUsage();
-            usage.setId((long) (usageRecords.size() + 1));
-            usage.setLicenseKey(licenseKey);
-            usage.setDeviceId(deviceId);
-            usage.setAppVersion(request.getAppVersion());
-            usage.setPlatform(request.getPlatform());
-            usage.setActivatedAt(LocalDateTime.now());
-            usage.setStatus("ACTIVE");
-
-            usageRecords.put(licenseKey, usage);
-
-            // Change license status to used
-            license.setStatus("USED");
-
-            // Build response data
-            Map<String, Object> licenseData = new HashMap<>();
-            licenseData.put("licenseKey", license.getLicenseKey());
-            licenseData.put("type", license.getType());
-            licenseData.put("startDate", license.getStartDate().toString());
-            licenseData.put("endDate", license.getEndDate().toString());
-            licenseData.put("maxDevices", license.getMaxDevices());
-            licenseData.put("maxActivations", license.getMaxActivations());
-
-            response.put("success", true);
-            response.put("message", "라이센스 인증이 성공했습니다.");
-            response.put("license", licenseData);
-            response.put("token", generateToken(license, usage));
-
+            
+            // 최초 인증: endDate가 null이고 CUSTOM이 아니면 타입에 따라 만료일 계산
+            if (license.getEndDate() == null && !"CUSTOM".equals(license.getType())) {
+                System.out.println("First activation, calculating end date");
+                java.time.LocalDateTime now = java.time.LocalDateTime.now();
+                int days = 0;
+                switch (license.getType()) {
+                    case "TRIAL": days = 7; break;
+                    case "BASIC": days = 30; break;
+                    case "PREMIUM": days = 90; break;
+                    case "ENTERPRISE": days = 365; break;
+                    default: days = 30;
+                }
+                license.setEndDate(now.plusDays(days));
+                System.out.println("Updated license with end date: " + license.getEndDate());
+            }
+            
+            // 인증 성공 시 상태를 'IN_USE'로 변경
+            if (!"IN_USE".equals(license.getStatus())) {
+                System.out.println("License status updated to IN_USE");
+                license.setStatus("IN_USE");
+            }
+            licenseRepository.save(license);
+            
+            // 인증 성공 시 사용 기록 업데이트
+            System.out.println("License is valid, updating usage record");
+            LicenseUsage usage = licenseUsageRepository.findByLicenseKey(licenseKey);
+            if (usage == null) {
+                usage = new LicenseUsage();
+                usage.setLicenseKey(licenseKey);
+                usage.setDeviceId("VR_DEVICE"); // 기본값
+                usage.setActivatedAt(java.time.LocalDateTime.now());
+                usage.setLastUsedAt(java.time.LocalDateTime.now());
+                licenseUsageRepository.save(usage);
+                System.out.println("Created new usage record");
+            } else {
+                usage.setLastUsedAt(java.time.LocalDateTime.now());
+                licenseUsageRepository.save(usage);
+                System.out.println("Updated existing usage record");
+            }
+            
+            response.put("status", "VALID");
+            response.put("expiry", license.getEndDate() != null ? license.getEndDate().toString() : "");
             return ResponseEntity.ok(response);
         } catch (Exception e) {
-            response.put("success", false);
-            response.put("message", "Error occurred during license verification: " + e.getMessage());
+            response.put("status", "ERROR");
+            response.put("expiry", "");
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response);
         }
     }
@@ -243,10 +244,35 @@ public class LicenseController {
             response.put("message", "Authentication required.");
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(response);
         }
-        
+        // 만료일이 지난 라이선스 자동 만료 처리
+        List<License> licenses = licenseRepository.findAll();
+        boolean updated = false;
+        for (License license : licenses) {
+            System.out.println("Checking license: " + license.getLicenseKey() + ", endDate: " + license.getEndDate() + ", status: " + license.getStatus());
+            if (license.getEndDate() != null && java.time.LocalDateTime.now().isAfter(license.getEndDate()) && !"EXPIRED".equals(license.getStatus())) {
+                System.out.println("Expiring license: " + license.getLicenseKey());
+                license.setStatus("EXPIRED");
+                licenseRepository.save(license);
+                updated = true;
+            }
+        }
+        if (updated) {
+            licenses = licenseRepository.findAll(); // 갱신 후 재조회
+        }
+        // 정렬: 사용중 > 활성 > 만료 > 기타, 각 그룹 내 최신 생성일 내림차순
+        licenses.sort(Comparator
+            .comparing((License l) -> {
+                String status = l.getStatus();
+                if ("IN_USE".equalsIgnoreCase(status) || "사용중".equals(status)) return 0;
+                if ("ACTIVE".equalsIgnoreCase(status) || "활성".equals(status)) return 1;
+                if ("EXPIRED".equalsIgnoreCase(status) || "만료".equals(status)) return 2;
+                return 3; // 기타 상태
+            })
+            .thenComparing(License::getCreatedAt, Comparator.reverseOrder())
+        );
         Map<String, Object> response = new HashMap<>();
         response.put("success", true);
-        response.put("licenses", new ArrayList<>(licenses.values()));
+        response.put("licenses", licenses);
         return ResponseEntity.ok(response);
     }
 
@@ -264,14 +290,14 @@ public class LicenseController {
         
         Map<String, Object> response = new HashMap<>();
         
-        License license = licenses.get(licenseKey);
+        License license = licenseRepository.findByLicenseKey(licenseKey);
         if (license == null) {
             response.put("success", false);
             response.put("message", "License not found.");
             return ResponseEntity.notFound().build();
         }
 
-        LicenseUsage usage = usageRecords.get(licenseKey);
+        LicenseUsage usage = licenseUsageRepository.findByLicenseKey(licenseKey);
         
         response.put("success", true);
         response.put("license", license);
@@ -282,31 +308,20 @@ public class LicenseController {
 
     // License revocation API (requires login)
     @PostMapping("/{licenseKey}/revoke")
-    @ResponseBody
-    public ResponseEntity<Map<String, Object>> revokeLicense(@PathVariable String licenseKey, HttpSession session) {
-        // Login check for API
+    public String revokeLicense(@PathVariable String licenseKey, HttpSession session, RedirectAttributes redirectAttributes) {
         if (session.getAttribute("isLoggedIn") == null || !(Boolean) session.getAttribute("isLoggedIn")) {
-            Map<String, Object> response = new HashMap<>();
-            response.put("success", false);
-            response.put("message", "Authentication required.");
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(response);
+            redirectAttributes.addFlashAttribute("error", "Authentication required.");
+            return "redirect:/login";
         }
-        
-        Map<String, Object> response = new HashMap<>();
-        
-        License license = licenses.get(licenseKey);
+        License license = licenseRepository.findByLicenseKey(licenseKey);
         if (license == null) {
-            response.put("success", false);
-            response.put("message", "License not found.");
-            return ResponseEntity.notFound().build();
+            redirectAttributes.addFlashAttribute("error", "라이센스를 찾을 수 없습니다.");
+            return "redirect:/";
         }
-
         license.setStatus("EXPIRED");
-        
-        response.put("success", true);
-        response.put("message", "License revoked successfully.");
-        
-        return ResponseEntity.ok(response);
+        licenseRepository.save(license);
+        redirectAttributes.addFlashAttribute("success", "라이센스가 만료(취소) 처리되었습니다.");
+        return "redirect:/";
     }
 
     // Auto-generate license key with 25A1234-5678 format
@@ -333,5 +348,35 @@ public class LicenseController {
         // In real implementation, use JWT or other token generation method
         long epoch = usage.getActivatedAt().toEpochSecond(java.time.ZoneOffset.UTC);
         return "TOKEN_" + license.getLicenseKey() + "_" + epoch;
+    }
+
+    // 12시간마다 만료 체크 스케줄러
+    @Scheduled(fixedRate = 12 * 60 * 60 * 1000) // 12시간 = 12 * 60 * 60 * 1000 밀리초
+    public void checkExpiredLicenses() {
+        System.out.println("[스케줄러] 12시간마다 만료 체크 시작 - " + java.time.LocalDateTime.now());
+        performExpirationCheck();
+    }
+
+    // 서버 시작 시 즉시 만료 체크
+    @PostConstruct
+    public void checkExpiredLicensesOnStartup() {
+        System.out.println("[시작체크] 서버 시작 시 만료 체크 시작 - " + java.time.LocalDateTime.now());
+        performExpirationCheck();
+    }
+
+    // 만료 체크 공통 메서드
+    private void performExpirationCheck() {
+        List<License> licenses = licenseRepository.findAll();
+        System.out.println("[만료체크] 전체 라이선스 개수: " + licenses.size());
+        int expiredCount = 0;
+        for (License license : licenses) {
+            if (license.getEndDate() != null && java.time.LocalDateTime.now().isAfter(license.getEndDate()) && !"EXPIRED".equals(license.getStatus())) {
+                System.out.println("[만료체크] 만료 처리: " + license.getLicenseKey() + " (endDate: " + license.getEndDate() + ")");
+                license.setStatus("EXPIRED");
+                licenseRepository.save(license);
+                expiredCount++;
+            }
+        }
+        System.out.println("[만료체크] 만료 처리 완료 - " + expiredCount + "개 라이선스 만료 처리됨");
     }
 }
